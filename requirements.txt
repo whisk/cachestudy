@@ -1,2 +1,3 @@
 greenlet==3.0.3
 salabim==24.0.9.post0
+simpy==4.1.1
