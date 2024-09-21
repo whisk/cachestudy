@@ -25,10 +25,32 @@ class Stats:
     ok: int = 0
     fails: int = 0
 
+
+class Response():
+    def __init__(self, val):
+        self.is_ok = True
+        self.msg = ""
+        self.val = val
+
+    @classmethod
+    def Success(cls, val):
+        err = cls(val)
+        return err
+
+    @classmethod
+    def Error(cls, msg):
+        err = cls(None)
+        err.msg = msg
+        err.is_ok = False
+        return err
+
+
 class KeyValueStorage(simpy.Resource):
-    def __init__(self, env: simpy.Environment, capacity: int = 1):
+    def __init__(self, env: simpy.Environment, capacity: int = 1, timeout: int = 1, response_time: int = 1):
         self._values     = dict()
         self._expires_at = dict()
+        self._timeout = timeout
+        self._response_time = response_time
         super().__init__(env, capacity)
 
     def get(self, key):
@@ -45,49 +67,58 @@ class KeyValueStorage(simpy.Resource):
         self._values[key] = value
         self._expires_at[key] = self._env.now + ttl
 
+    def process_get(self, env, key):
+        req = self.request()
+        yield req | env.timeout(self._timeout)
+        if not req.triggered:
+            # resource read timed out, fail
+            return Response.Error("Timeout")
+        # wait for resource to respond
+        yield env.timeout(self._response_time)
+        val = self.get(key)
+        self.release(req)
+        return Response.Success(val)
+
+    def process_set(self, env, key, value, ttl = None):
+        req = self.request()
+        yield req | env.timeout(self._timeout)
+        if not req.triggered:
+            # resource write timed out, fail
+            return Response.Error("Timeout")
+        # wait for resource to respond
+        yield env.timeout(self._response_time)
+        val = self.set(key, value, ttl)
+        self.release(req)
+        return Response.Success(val)
+
 
 def backend(env: simpy.Environment, cache: KeyValueStorage, database: KeyValueStorage, key, stats: Stats):
-    cache_req = cache.request()
-    val = yield cache_req | env.timeout(CACHE_TIMEOUT)
-    if not cache_req.triggered:
-        # cache read timed out, fail
-        return None
-    # wait for cache response
-    yield env.timeout(CACHE_RESP_MEAN)
-    val = cache.get(key)
-    cache.release(cache_req)
-    if val is not None:
+    resp = yield from cache.process_get(env, key)
+    if resp.is_ok and resp.val is not None:
+        # data was in the cache
         stats.ok += 1
-        return val
+        return resp.val
 
     # cache is empty, read from database
-    database_req = database.request()
-    yield database_req | env.timeout(DATABASE_TIMEOUT)
-    if not database_req.triggered:
+    database_resp = yield from database.process_get(env, key)
+    if not database_resp.is_ok:
         # database timed out, fail
         stats.fails += 1
         return None
-    yield env.timeout(DATABASE_RESP_MEAN)
-    val = database.get(key)
-    database.release(database_req)
+
     # save result to cache
-    cache_req = cache.request()
-    yield cache_req | env.timeout(CACHE_TIMEOUT)
-    if not cache_req.triggered:
-        # cache write timed out, semi fail
-        return val
-    cache.set(key, val, KEY_CACHE_TTL_MEAN)
-    cache.release(cache_req)
+    _ = yield from cache.process_set(env, key, database_resp.val, KEY_CACHE_TTL_MEAN)
     stats.ok += 1
-    return val
+    return database_resp.val
+
 
 def run(env: simpy.Environment, cache: KeyValueStorage, database: KeyValueStorage, stats: Stats) -> simpy.events.ProcessGenerator:
     # prepopulate dabase and cache
     for key in range(KEY_MAX):
         val = "Value {}".format(key)
         database.set(key, val)
-        #cache.set(key, val, random.uniform(0, KEY_CACHE_TTL_MEAN))
-        cache.set(key, val, KEY_CACHE_TTL_MEAN)
+        cache.set(key, val, random.uniform(0, KEY_CACHE_TTL_MEAN))
+        #cache.set(key, val, KEY_CACHE_TTL_MEAN)
     print("database and cache populated")
 
     while True:
@@ -96,9 +127,10 @@ def run(env: simpy.Environment, cache: KeyValueStorage, database: KeyValueStorag
         key = random.randint(0, KEY_MAX)
         env.process(backend(env, cache, database, key, stats))
 
+
 env = simpy.Environment()
-cache = KeyValueStorage(env, CACHE_CAPACITY)
-database = KeyValueStorage(env, DATABASE_CAPACITY)
+cache = KeyValueStorage(env, CACHE_CAPACITY, CACHE_TIMEOUT, CACHE_RESP_MEAN)
+database = KeyValueStorage(env, DATABASE_CAPACITY, DATABASE_TIMEOUT, DATABASE_RESP_MEAN)
 stats = Stats()
 env.process(run(env, cache, database, stats))
 env.run(until=SIMULATION_TIME)
