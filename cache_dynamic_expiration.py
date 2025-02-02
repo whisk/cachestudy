@@ -11,8 +11,13 @@ import logging
 from dataclasses import dataclass, field
 
 SIMULATION_TIME = 3600000
-KEY_MAX = 1000
-KEY_CACHE_TTL = 600000
+
+KEY_CACHE_PREFILL_MAX = 100000
+KEY_CACHE_TTL = 360000
+
+KEY_GEN_A = 0.5
+KEY_GEN_K = 5.0
+KEY_GEN_MOD = 6969691
 
 REQUESTS_PER_U = 0.1
 REQUESTS_LAMBDA = 1.0 * REQUESTS_PER_U
@@ -32,9 +37,11 @@ class Stats:
     requests: int = 0
     ok: int = 0
     fails: int = 0
-    data_x: list[float] = field(default_factory=list)
-    data_y: list[float] = field(default_factory=list)
-    data_t: list[float] = field(default_factory=list)
+    data: list[float] = field(default_factory=list)
+
+    def add_data(self, timestamp, result: int, response_time: float, key: int):
+        row = [timestamp, result, response_time, key]
+        self.data.append(row)
 
 class Response():
     def __init__(self, val):
@@ -124,20 +131,17 @@ class KeyValueStorage(simpy.Resource):
 
 def backend(env: simpy.Environment, cache: KeyValueStorage, database: KeyValueStorage, key, stats: Stats):
     t0 = env.now
-    stats.data_x.append(t0)
     resp = yield from cache.process_get(env, key)
     if resp.is_ok and resp.val is not None:
         logging.getLogger().debug("Cache hit")
         # data was in the cache
         stats.ok += 1
-        stats.data_y.append(1.0)
-        stats.data_t.append(env.now - t0)
+        stats.add_data(t0, 1, env.now - t0, key)
         return resp.val
 
     if not resp.is_ok:
         logging.getLogger().debug("Cache fail")
-        stats.data_y.append(0.0)
-        stats.data_t.append(env.now - t0)
+        stats.add_data(t0, 0, env.now - t0, key)
         return resp.val
 
     logging.getLogger().debug("Cache miss")
@@ -146,20 +150,18 @@ def backend(env: simpy.Environment, cache: KeyValueStorage, database: KeyValueSt
     if not database_resp.is_ok:
         # database timed out, fail
         stats.fails += 1
-        stats.data_y.append(0.0)
-        stats.data_t.append(env.now - t0)
+        stats.add_data(t0, 0, env.now - t0, key)
         return None
 
     # save result to cache
     _ = yield from cache.process_set(env, key, database_resp.val, KEY_CACHE_TTL)
     stats.ok += 1
-    stats.data_y.append(1.0)
-    stats.data_t.append(env.now - t0)
+    stats.add_data(t0, 1, env.now - t0, key)
     return database_resp.val
 
 def simulation(env: CacheEnvironment, cache: KeyValueStorage, database: KeyValueStorage, stats: Stats):
     # prepopulate dabase and cache
-    for key in range(KEY_MAX):
+    for key in range(KEY_CACHE_PREFILL_MAX):
         val = "Value {}".format(key)
         database.set(key, val)
         cache.set(key, val, random.uniform(0, KEY_CACHE_TTL))
@@ -168,8 +170,7 @@ def simulation(env: CacheEnvironment, cache: KeyValueStorage, database: KeyValue
     while True:
         yield env.timeout(random.expovariate(REQUESTS_LAMBDA))
         stats.requests += 1
-        key = math.ceil(np.random.zipf(1.5))
-        key = np.clip(key, 0, KEY_MAX - 1)
+        key = int(np.random.pareto(KEY_GEN_A) * KEY_GEN_K) % KEY_GEN_MOD
         logging.getLogger().debug("Request key %d", key)
         env.process(backend(env, cache, database, key, stats))
 
@@ -185,21 +186,10 @@ env.process(simulation(env, cache, database, stats))
 env.run(until=SIMULATION_TIME)
 logging.getLogger().info("Simulation done")
 
-df = pd.DataFrame(
-    {
-        'timestamp': pd.to_datetime(stats.data_x, unit='ms'),
-        'value': pd.Series(stats.data_y).reindex(range(len(stats.data_x)), fill_value=pd.NA),
-        'time': pd.Series(stats.data_t).reindex(range(len(stats.data_x)), fill_value=pd.NA),
-    }
-)
+df = pd.DataFrame(stats.data, columns=['timestamp', 'result', 'response_time', 'key'])
 df.set_index('timestamp', inplace=True)
+df.index = pd.to_datetime(df.index, unit='ms')
+df.sort_index(inplace=True)
 
-resample_delta = "5s"
-df_resampled_p99 = df.resample(resample_delta).quantile(0.99)
-df_resampled_p98 = df.resample(resample_delta).quantile(0.98)
-df_resampled_p50 = df.resample(resample_delta).quantile(0.50)
-plt.plot(df_resampled_p99.index, df_resampled_p99['time'], linestyle='-', marker='', color='r')
-plt.plot(df_resampled_p98.index, df_resampled_p98['time'], linestyle='-', marker='', color='y')
-plt.plot(df_resampled_p50.index, df_resampled_p50['time'], linestyle='-', marker='', color='b')
-plt.grid(True)
-plt.show()
+df.to_csv('cache_dynamic_expiration.csv')
+logging.getLogger().info("Data saved")
