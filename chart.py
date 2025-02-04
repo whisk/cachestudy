@@ -1,31 +1,26 @@
-import simpy
-import simpy.events
-import simpy.util
-import random
 import pandas as pd
 import matplotlib.pyplot as plt
-import numpy as np
-import math
-import logging
+import argparse
 
 from dataclasses import dataclass, field
 
-df = pd.read_csv('cache_dynamic_expiration.csv', parse_dates=['timestamp'], index_col='timestamp')
+parser = argparse.ArgumentParser(description='Cache simulation with dynamic expiration')
+parser.add_argument('--input', type=str, default='output.csv', help='Output filename for the CSV file')
+args = parser.parse_args()
+
+df = pd.read_csv(args.input, parse_dates=['timestamp'], index_col='timestamp')
+df_popular = df[df['key'] < 1000]
 
 # resample data
-df_resampled_p99 = df.resample("60s").quantile(0.99)
-df_resampled_p95 = df.resample("60s").quantile(0.95)
-df_resampled_p50 = df.resample("60s").quantile(0.50)
-df_resampled_mean = df.resample("60s").mean()
+df_resampled_p99 = df_popular.resample("60s").quantile(0.99)
+df_resampled_mean = df_popular.resample("60s").mean()
 
 # create a figure with two subplots
 fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 8))
 
 # Plot response time over time on the first subplot
-ax1.plot(df_resampled_p99.index, df_resampled_p99['response_time'], linestyle='--', linewidth=1.0, marker='', color='r', label='p99')
-ax1.plot(df_resampled_p95.index, df_resampled_p95['response_time'], linestyle='--', linewidth=1.0, marker='', color='y', label='p95')
-ax1.plot(df_resampled_p50.index, df_resampled_p50['response_time'], linestyle='-', linewidth=1.0, marker='', color='b', label='p50')
-ax1.plot(df_resampled_mean.index, df_resampled_mean['response_time'], linestyle='-', linewidth=1.0, marker='', color='g', label='mean')
+ax1.plot(df_resampled_p99.index, df_resampled_p99['response_time'], linestyle='-', marker='', color='r', label='p99')
+ax1.plot(df_resampled_mean.index, df_resampled_mean['response_time'], linestyle='-', marker='', color='g', label='mean')
 ax1.legend()
 ax1.set_xlabel('Simulation time')
 ax1.set_ylabel('Response time (ms)')

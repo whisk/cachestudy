@@ -7,30 +7,31 @@ import matplotlib.pyplot as plt
 import numpy as np
 import math
 import logging
+import argparse
 
 from dataclasses import dataclass, field
 
-SIMULATION_TIME = 3600000
+SIMULATION_TIME = 60 * 60 * 1000
 
-KEY_CACHE_PREFILL_MAX = 100000
-KEY_CACHE_TTL = 360000
+KEY_CACHE_PREFILL_MAX = 1000
+KEY_CACHE_TTL = 20 * 60 * 1000
 
-KEY_GEN_A = 0.5
-KEY_GEN_K = 5.0
-KEY_GEN_MOD = 6969691
+KEY_GEN_A = 0.2
+KEY_GEN_K = 2.0
+KEY_GEN_MOD = 1000003
 
 REQUESTS_PER_U = 0.1
 REQUESTS_LAMBDA = 1.0 * REQUESTS_PER_U
 
 CACHE_CAPACITY = 10000
-CACHE_RESP_MEAN = 10
-CACHE_RESP_DEV = 1
-CACHE_TIMEOUT = 100
+CACHE_RESP_MEAN = 0.010 * 1000
+CACHE_RESP_DEV = 0.002 * 1000
+CACHE_TIMEOUT = 0.200 * 1000
 
 DATABASE_CAPACITY = 100
-DATABASE_RESP_MEAN = 250
-DATABASE_RESP_DEV = 25
-DATABASE_TIMEOUT = 2000
+DATABASE_RESP_MEAN = 0.25 * 1000
+DATABASE_RESP_DEV = 0.025 * 1000
+DATABASE_TIMEOUT = 2 * 1000
 
 @dataclass
 class Stats:
@@ -93,6 +94,13 @@ class KeyValueStorage(simpy.Resource):
         self._values[key] = value
         self._expires_at[key] = self._env.now + ttl
 
+    def ttl(self, key) -> int:
+        if key not in self._expires_at:
+            return -2
+        if self._expires_at[key] < self._env.now:
+            return -1
+        return self._expires_at[key] - self._env.now
+
     def delete(self, key):
         del self._values[key]
 
@@ -129,15 +137,28 @@ class KeyValueStorage(simpy.Resource):
         return Response.Success(val)
 
 
-def backend(env: simpy.Environment, cache: KeyValueStorage, database: KeyValueStorage, key, stats: Stats):
+def backend(env: simpy.Environment, cache: KeyValueStorage, database: KeyValueStorage, key, stats: Stats, ttl_ext_prob: float = 0.0):
     t0 = env.now
     resp = yield from cache.process_get(env, key)
     if resp.is_ok and resp.val is not None:
         logging.getLogger().debug("Cache hit")
         # data was in the cache
         stats.ok += 1
-        stats.add_data(t0, 1, env.now - t0, key)
-        return resp.val
+
+        # extend ttl
+        if random.random() < ttl_ext_prob:
+            stats.add_data(t0, 2, env.now - t0, key)
+            ttl = cache.ttl(key)
+            logging.getLogger().debug("Remaining TTL: %d", ttl)
+            if ttl > 0:
+                logging.getLogger().debug("Extending TTL")
+                database_resp = yield from database.process_get(env, key)
+                if database_resp.is_ok:
+                    _ = yield from cache.process_set(env, key, database_resp.val, KEY_CACHE_TTL)
+            return resp.val
+        else:
+            stats.add_data(t0, 1, env.now - t0, key)
+            return resp.val
 
     if not resp.is_ok:
         logging.getLogger().debug("Cache fail")
@@ -159,7 +180,7 @@ def backend(env: simpy.Environment, cache: KeyValueStorage, database: KeyValueSt
     stats.add_data(t0, 1, env.now - t0, key)
     return database_resp.val
 
-def simulation(env: CacheEnvironment, cache: KeyValueStorage, database: KeyValueStorage, stats: Stats):
+def simulation(env: CacheEnvironment, cache: KeyValueStorage, database: KeyValueStorage, stats: Stats, ttl_ext_prob: float = 0.0):
     # prepopulate dabase and cache
     for key in range(KEY_CACHE_PREFILL_MAX):
         val = "Value {}".format(key)
@@ -172,24 +193,33 @@ def simulation(env: CacheEnvironment, cache: KeyValueStorage, database: KeyValue
         stats.requests += 1
         key = int(np.random.pareto(KEY_GEN_A) * KEY_GEN_K) % KEY_GEN_MOD
         logging.getLogger().debug("Request key %d", key)
-        env.process(backend(env, cache, database, key, stats))
+        env.process(backend(env, cache, database, key, stats, ttl_ext_prob))
 
+def main():
+    parser = argparse.ArgumentParser(description='Cache simulation with dynamic expiration')
+    parser.add_argument('--output', type=str, default='output.csv', help='Output filename for the CSV file')
+    parser.add_argument('--ttl-ext-prob', type=float, default=0.0, help='Cache TTL extension probability')
+    parser.add_argument('--loglevel', default='DEBUG', help='Logging level')
+    args = parser.parse_args()
 
-logging.basicConfig(level=logging.DEBUG)
-env = CacheEnvironment()
-cache = KeyValueStorage(env, CACHE_CAPACITY, CACHE_TIMEOUT, CACHE_RESP_MEAN)
-database = KeyValueStorage(env, DATABASE_CAPACITY, DATABASE_TIMEOUT, DATABASE_RESP_MEAN)
-stats = Stats()
+    logging.basicConfig(level=args.loglevel)
+    env = CacheEnvironment()
+    cache = KeyValueStorage(env, CACHE_CAPACITY, CACHE_TIMEOUT, CACHE_RESP_MEAN)
+    database = KeyValueStorage(env, DATABASE_CAPACITY, DATABASE_TIMEOUT, DATABASE_RESP_MEAN)
+    stats = Stats()
 
-logging.getLogger().info("Starting simulation")
-env.process(simulation(env, cache, database, stats))
-env.run(until=SIMULATION_TIME)
-logging.getLogger().info("Simulation done")
+    logging.getLogger().info("Starting simulation")
+    env.process(simulation(env, cache, database, stats, args.ttl_ext_prob))
+    env.run(until=SIMULATION_TIME)
+    logging.getLogger().info("Simulation done")
 
-df = pd.DataFrame(stats.data, columns=['timestamp', 'result', 'response_time', 'key'])
-df.set_index('timestamp', inplace=True)
-df.index = pd.to_datetime(df.index, unit='ms')
-df.sort_index(inplace=True)
+    df = pd.DataFrame(stats.data, columns=['timestamp', 'result', 'response_time', 'key'])
+    df.set_index('timestamp', inplace=True)
+    df.index = pd.to_datetime(df.index, unit='ms')
+    df.sort_index(inplace=True)
 
-df.to_csv('cache_dynamic_expiration.csv')
-logging.getLogger().info("Data saved")
+    df.to_csv(args.output)
+    logging.getLogger().info("Data saved")
+
+if __name__ == "__main__":
+    main()
