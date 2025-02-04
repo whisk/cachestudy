@@ -1,15 +1,14 @@
+from dataclasses import dataclass, field
+import argparse
+import logging
+import math
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import random
 import simpy
 import simpy.events
 import simpy.util
-import random
-import pandas as pd
-import matplotlib.pyplot as plt
-import numpy as np
-import math
-import logging
-import argparse
-
-from dataclasses import dataclass, field
 
 SIMULATION_TIME = 60 * 60 * 1000
 
@@ -17,7 +16,7 @@ KEY_CACHE_PREFILL_MAX = 1000
 KEY_CACHE_TTL = 20 * 60 * 1000
 
 KEY_GEN_A = 0.2
-KEY_GEN_K = 2.0
+KEY_GEN_K = 2.5
 KEY_GEN_MOD = 1000003
 
 REQUESTS_PER_U = 0.1
@@ -196,9 +195,9 @@ def simulation(env: CacheEnvironment, cache: KeyValueStorage, database: KeyValue
         env.process(backend(env, cache, database, key, stats, ttl_ext_prob))
 
 def main():
-    parser = argparse.ArgumentParser(description='Cache simulation with dynamic expiration')
-    parser.add_argument('--output', type=str, default='output.csv', help='Output filename for the CSV file')
-    parser.add_argument('--ttl-ext-prob', type=float, default=0.0, help='Cache TTL extension probability')
+    parser = argparse.ArgumentParser(description='Cache simulation with dynamic TTL extension')
+    parser.add_argument('--journal', type=str, default='journal.csv', help='Simulation journal output filename')
+    parser.add_argument('--ttl-ext-prob', type=float, default=0.0, help='TTL extension probability on cache reads')
     parser.add_argument('--loglevel', default='DEBUG', help='Logging level')
     args = parser.parse_args()
 
@@ -218,8 +217,8 @@ def main():
     df.index = pd.to_datetime(df.index, unit='ms')
     df.sort_index(inplace=True)
 
-    df.to_csv(args.output)
-    logging.getLogger().info("Data saved")
+    df.to_csv(args.journal)
+    logging.getLogger().info("Journal saved")
 
 if __name__ == "__main__":
     main()
