@@ -8,7 +8,7 @@ import pandas as pd
 # FIXME: should output list of top keys, not a single key
 def get_border_key(df: pd.DataFrame, top_keys_share: float):
     sum = 0
-    border_key = -1
+    border_key = None
     for key, val in df["key"].value_counts().items():
         if sum + val > len(df) * top_keys_share:
             break
@@ -32,6 +32,9 @@ def main():
     df = pd.read_csv(args.journal, parse_dates=["timestamp"], index_col="timestamp", comment="#")
     logging.getLogger().info("Read %d records", len(df))
 
+    # create a figure with subplots
+    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(12, 8))
+
     if args.top_keys_threshold > 0:
         counts = df["key"].value_counts()
         border_key = counts[counts > args.top_keys_threshold].index[-1]
@@ -41,13 +44,11 @@ def main():
         border_key = df["key"].max()
 
     logging.getLogger().info("Border key is %d", border_key)
-    df_topkeys = df[df["key"] <= border_key]
+    df_topkeys = df[df["key"] <= border_key].copy()
     logging.getLogger().info("Requests for popular keys count %d (%0.4f)", len(df_topkeys), len(df_topkeys) / len(df))
 
-    # create a figure with subplots
-    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(12, 8))
-
     # plot response time over time
+    df_topkeys.drop(columns="result", inplace=True)
     df_resampled_p = df_topkeys.resample("60s").quantile(args.quantile)
     df_resampled_mean = df_topkeys.resample("60s").mean()
     ax1.plot(df_resampled_p.index, df_resampled_p["response_time"], linestyle="-", marker="", color="r", label="p{:0.2f}".format(args.quantile * 100.0))
@@ -71,16 +72,16 @@ def main():
     ax2.grid(True)
 
     # plot key popularity histogram
-    key_popularity = df[df["result"] == 1 ]["key"].value_counts().nlargest(border_key)
+    key_popularity = df["key"].value_counts().nlargest(200)
     ax3.bar(key_popularity.index, key_popularity.values, width=1.0, color="b")
     ax3.set_xlabel("Key")
-    ax3.set_ylabel("Popularity")
+    ax3.set_ylabel("Requests count")
     ax3.grid(True)
 
     # plot cache hit ration
     df_hit_ratio = df.copy()
-    df_hit_ratio["hit"] = df["result"].transform(lambda x: np.clip(x, 0.0, 1.0))
-    df_hit_ratio = df_hit_ratio.groupby("key")["hit"].mean().sort_index()[0:border_key]
+    df_hit_ratio["hit"] = df["result"].transform(lambda x: 1 if x.find("cache_hit") != -1 else 0)
+    df_hit_ratio = df_hit_ratio.groupby("key")["hit"].mean()[0:border_key]
     df_miss_ratio = 1.0 - df_hit_ratio
     ax4.bar(df_hit_ratio.index, df_hit_ratio.values, width=1.0, color="g")
     ax4.bar(df_miss_ratio.index, df_miss_ratio.values, bottom=df_hit_ratio.values, width=1.0, color="r")

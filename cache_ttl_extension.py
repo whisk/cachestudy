@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from typing import Any
 import argparse
 import logging
 import math
@@ -40,9 +41,9 @@ class Stats:
     requests: int = 0
     ok: int = 0
     fails: int = 0
-    data: list[float] = field(default_factory=list)
+    data: list[Any] = field(default_factory=list)
 
-    def add_data(self, timestamp, result: int, response_time: float, key: int):
+    def add_data(self, timestamp, result: str, response_time: float, key: int):
         row = [timestamp, result, response_time, key]
         self.data.append(row)
 
@@ -75,8 +76,8 @@ class CacheEnvironment(simpy.Environment):
 
 class KeyValueStorage(simpy.Resource):
     def __init__(self, env: simpy.Environment, capacity: int = 1, timeout: int = 1, response_time_min: int = 1, response_time_mean: int = 1000):
-        self._values     = dict()
-        self._expires_at = dict()
+        self._values: dict[int, Any] = dict()
+        self._expires_at: dict[int, int] = dict()
         self._timeout = timeout
         self._response_time_min = response_time_min
         self._response_time_k = response_time_mean - response_time_min
@@ -110,7 +111,8 @@ class KeyValueStorage(simpy.Resource):
         keys = list(self._values.keys())
         for key in keys:
             if random.random() < part:
-                cache.delete(key)
+                del self._values[key]
+                del self._expires_at[key]
 
     def process_get(self, env, key):
         req = self.request()
@@ -149,7 +151,7 @@ def backend(env: simpy.Environment, cache: KeyValueStorage, database: KeyValueSt
 
         # extend ttl
         if random.random() < ttl_ext_prob:
-            stats.add_data(t0, 2, env.now - t0, key)
+            stats.add_data(t0, "cache_hit;cache_ttl_ext", env.now - t0, key)
             ttl = cache.ttl(key)
             logging.getLogger().debug("Remaining TTL: %d", ttl)
             if ttl > 0:
@@ -159,13 +161,13 @@ def backend(env: simpy.Environment, cache: KeyValueStorage, database: KeyValueSt
                     _ = yield from cache.process_set(env, key, database_resp.val, KEY_CACHE_TTL)
             return resp.val
         else:
-            stats.add_data(t0, 1, env.now - t0, key)
+            stats.add_data(t0, "cache_hit", env.now - t0, key)
             return resp.val
 
     if not resp.is_ok:
         logging.getLogger().debug("Cache fail")
-        stats.add_data(t0, 0, env.now - t0, key)
-        return resp.val
+        stats.add_data(t0, "cache_fail", env.now - t0, key)
+        return None
 
     logging.getLogger().debug("Cache miss")
     # cache is empty, read from database
@@ -173,13 +175,13 @@ def backend(env: simpy.Environment, cache: KeyValueStorage, database: KeyValueSt
     if not database_resp.is_ok:
         # database timed out, fail
         stats.fails += 1
-        stats.add_data(t0, 0, env.now - t0, key)
+        stats.add_data(t0, "cache_miss;db_fail", env.now - t0, key)
         return None
 
     # save result to cache
     _ = yield from cache.process_set(env, key, database_resp.val, KEY_CACHE_TTL)
     stats.ok += 1
-    stats.add_data(t0, 0, env.now - t0, key)
+    stats.add_data(t0, "cache_miss;db_ok", env.now - t0, key)
     return database_resp.val
 
 def simulation(env: CacheEnvironment, cache: KeyValueStorage, database: KeyValueStorage, stats: Stats, ttl_ext_prob: float = 0.0):
@@ -198,9 +200,9 @@ def simulation(env: CacheEnvironment, cache: KeyValueStorage, database: KeyValue
         env.process(backend(env, cache, database, key, stats, ttl_ext_prob))
 
 def main():
-    parser = argparse.ArgumentParser(description='Cache simulation with dynamic TTL extension')
-    parser.add_argument('--journal', type=str, default='journal.csv', help='Simulation journal output filename')
-    parser.add_argument('--ttl-ext-prob', type=float, default=0.0, help='TTL extension probability on cache reads')
+    parser = argparse.ArgumentParser(description="Cache simulation with dynamic TTL extension")
+    parser.add_argument("--journal", type=str, default="journal.csv", help="Simulation journal output filename")
+    parser.add_argument("--ttl-ext-prob", type=float, default=0.0, help="TTL extension probability on cache reads")
     parser.add_argument("--loglevel", default=logging.DEBUG, choices=[*logging.getLevelNamesMapping().keys()], help="Logging level")
     args = parser.parse_args()
 
@@ -215,12 +217,12 @@ def main():
     env.run(until=SIMULATION_TIME)
     logging.getLogger().info("Simulation done")
 
-    df = pd.DataFrame(stats.data, columns=['timestamp', 'result', 'response_time', 'key'])
-    df.set_index('timestamp', inplace=True)
-    df.index = pd.to_datetime(df.index, unit='ms')
+    df = pd.DataFrame(stats.data, columns=["timestamp", "result", "response_time", "key"])
+    df.set_index("timestamp", inplace=True)
+    df.index = pd.to_datetime(df.index, unit="ms")
     df.sort_index(inplace=True)
 
-    fp = open(args.journal, 'w')
+    fp = open(args.journal, "w")
     fp.write("# Simulation journal\n")
     fp.write("# " + str(args) + "\n")
     df.to_csv(fp)
