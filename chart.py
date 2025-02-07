@@ -20,9 +20,10 @@ def get_border_key(df: pd.DataFrame, top_keys_share: float):
 def main():
     parser = argparse.ArgumentParser(description="Draw charts of cache simulation")
     parser.add_argument("--journal", type=str, default="journal.csv", help="Simulation journal filename")
-    parser.add_argument("--top-keys-share", type=float, default=0.8, help="Top keys share to analyze")
-    parser.add_argument("--top-keys-threshold", type=float, default=0, help="")
-    parser.add_argument("--quantile", type=float, default=0.95, help="")
+    parser.add_argument("--top-keys-requests-min", type=float, default=0, help="Limit top keys by minimal number of requests")
+    parser.add_argument("--top-keys-requests-share", type=float, default=0.8, help="Limit top keys by share of requests")
+    parser.add_argument("--response-time-quantile", type=float, default=0.99, help="Quantile of response time to display")
+    parser.add_argument("--keys-distribution-nlargest", type=int, default=200, metavar="N", help="Display top N keys in the distribution")
     parser.add_argument("--loglevel", default=logging.INFO, choices=list(logging.getLevelNamesMapping().keys()), help="Logging level")
     args = parser.parse_args()
 
@@ -35,23 +36,23 @@ def main():
     # create a figure with subplots
     fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(12, 8))
 
-    if args.top_keys_threshold > 0:
+    if args.top_keys_requests_min > 0:
         counts = df["key"].value_counts()
-        border_key = counts[counts > args.top_keys_threshold].index[-1]
-    elif args.top_keys_share > 0:
-        border_key = get_border_key(df, args.top_keys_share)
+        top_keys_border = counts[counts > args.top_keys_requests_min].index[-1]
+    elif args.top_keys_requests_share > 0:
+        top_keys_border = get_border_key(df, args.top_keys_requests_share)
     else:
-        border_key = df["key"].max()
+        top_keys_border = df["key"].max()
 
-    logging.getLogger().info("Border key is %d", border_key)
-    df_topkeys = df[df["key"] <= border_key].copy()
+    logging.getLogger().info("Border key is %d", top_keys_border)
+    df_topkeys = df[df["key"] <= top_keys_border].copy()
     logging.getLogger().info("Requests for popular keys count %d (%0.4f)", len(df_topkeys), len(df_topkeys) / len(df))
 
     # plot response time over time
     df_topkeys.drop(columns="result", inplace=True)
-    df_resampled_p = df_topkeys.resample("60s").quantile(args.quantile)
+    df_resampled_p = df_topkeys.resample("60s").quantile(args.response_time_quantile)
     df_resampled_mean = df_topkeys.resample("60s").mean()
-    ax1.plot(df_resampled_p.index, df_resampled_p["response_time"], linestyle="-", marker="", color="r", label="p{:0.2f}".format(args.quantile * 100.0))
+    ax1.plot(df_resampled_p.index, df_resampled_p["response_time"], linestyle="-", marker="", color="r", label="p{:0.2f}".format(args.response_time_quantile * 100.0))
     ax1.plot(df_resampled_mean.index, df_resampled_mean["response_time"], linestyle="-", marker="", color="g", label="mean")
     ax1.legend()
     ax1.set_xlabel("Simulation time")
@@ -72,20 +73,20 @@ def main():
     ax2.grid(True)
 
     # plot key popularity histogram
-    key_popularity = df["key"].value_counts().nlargest(200)
+    key_popularity = df["key"].value_counts().nlargest(args.keys_distribution_nlargest)
     ax3.bar(key_popularity.index, key_popularity.values, width=1.0, color="b")
-    ax3.set_xlabel("Key")
+    ax3.set_xlabel("Key (limited to {} most popular)".format(args.keys_distribution_nlargest))
     ax3.set_ylabel("Requests count")
     ax3.grid(True)
 
     # plot cache hit ration
     df_hit_ratio = df.copy()
     df_hit_ratio["hit"] = df["result"].transform(lambda x: 1 if x.find("cache_hit") != -1 else 0)
-    df_hit_ratio = df_hit_ratio.groupby("key")["hit"].mean()[0:border_key]
+    df_hit_ratio = df_hit_ratio.groupby("key")["hit"].mean()[0:top_keys_border]
     df_miss_ratio = 1.0 - df_hit_ratio
     ax4.bar(df_hit_ratio.index, df_hit_ratio.values, width=1.0, color="g")
     ax4.bar(df_miss_ratio.index, df_miss_ratio.values, bottom=df_hit_ratio.values, width=1.0, color="r")
-    ax4.set_xlabel("Key")
+    ax4.set_xlabel("Key ({} top keys are shown)".format(top_keys_border))
     ax4.set_ylabel("Cache hit ratio")
     ax4.grid(True)
 
