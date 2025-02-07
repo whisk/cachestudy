@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 import argparse
 import logging
 import matplotlib.pyplot as plt
+from matplotlib.axes import Axes
 import numpy as np
 import pandas as pd
 
@@ -35,6 +36,10 @@ def main():
     logging.getLogger().info("Read %d records", len(df))
 
     # create a figure with subplots
+    ax1: Axes
+    ax2: Axes
+    ax3: Axes
+    ax4: Axes
     fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(12, 8))
 
     if args.top_keys_border > 0:
@@ -52,30 +57,34 @@ def main():
     logging.getLogger().info("Requests for popular keys count %d (%0.4f)", len(df_topkeys), len(df_topkeys) / len(df))
 
     # plot response time over time
+    ax1.title.set_text("Backend response time")
     df_topkeys.drop(columns="result", inplace=True)
-    df_resampled_p = df_topkeys.resample("60s").quantile(args.response_time_quantile)
+    df_resampled_px = df_topkeys.resample("60s").quantile(args.response_time_quantile)
+    df_resampled_p50 = df_topkeys.resample("60s").quantile(0.5)
     df_resampled_mean = df_topkeys.resample("60s").mean()
-    ax1.plot(df_resampled_p.index, df_resampled_p["response_time"], linestyle="-", marker="", color="r", label="p{:0.2f}".format(args.response_time_quantile * 100.0))
+    ax1.plot(df_resampled_px.index, df_resampled_px["response_time"], linestyle="-", marker="", color="r", label="p{:0.2f}".format(args.response_time_quantile * 100.0))
+    ax1.plot(df_resampled_p50.index, df_resampled_p50["response_time"], linestyle="-", marker="", color="b", label="median")
     ax1.plot(df_resampled_mean.index, df_resampled_mean["response_time"], linestyle="-", marker="", color="g", label="mean")
     ax1.legend()
+    ax1.set_ylabel("ms")
     ax1.set_xlabel("Simulation time")
-    ax1.set_ylabel("Response time (ms)")
     ax1.set_ylim(0)
     ax1.grid(True)
 
     # plot number of requests over time
+    ax2.title.set_text("Requests per second")
     rps = df["response_time"].resample("1s").count().resample("5s").mean()
     rps_topkeys = df_topkeys["response_time"].resample("1s").count().resample("5s").mean()
 
     ax2.plot(rps.index, rps.values, linestyle="-", linewidth=1.0, marker="", color="b", label="All keys")
-    ax2.plot(rps_topkeys.index, rps_topkeys.values, linestyle="-", linewidth=1.0, marker="", color="r", label="Top keys")
+    ax2.plot(rps_topkeys.index, rps_topkeys.values, linestyle="-", linewidth=1.0, marker="", color="r", label="Top {} keys".format(top_keys_border))
     ax2.legend()
     ax2.set_xlabel("Simulation time")
-    ax2.set_ylabel("Requests per second")
     ax2.set_ylim(0)
     ax2.grid(True)
 
     # plot key popularity histogram
+    ax3.title.set_text("Key popularity distribution")
     key_popularity = df["key"].value_counts().nlargest(args.keys_distribution_nlargest)
     ax3.bar(key_popularity.index, key_popularity.values, width=1.0, color="b")
     ax3.set_xlabel("Key (limited to {} most popular)".format(args.keys_distribution_nlargest))
@@ -83,14 +92,15 @@ def main():
     ax3.grid(True)
 
     # plot cache hit ration
+    ax4.title.set_text("Cache hit ratio")
     df_hit_ratio = df.copy()
     df_hit_ratio["hit"] = df["result"].transform(lambda x: 1 if x.find("cache_hit") != -1 else 0)
     df_hit_ratio = df_hit_ratio.groupby("key")["hit"].mean()[0:top_keys_border]
     df_miss_ratio = 1.0 - df_hit_ratio
     ax4.bar(df_hit_ratio.index, df_hit_ratio.values, width=1.0, color="g")
     ax4.bar(df_miss_ratio.index, df_miss_ratio.values, bottom=df_hit_ratio.values, width=1.0, color="r")
-    ax4.set_xlabel("Key ({} top keys are shown)".format(top_keys_border))
-    ax4.set_ylabel("Cache hit ratio")
+    ax4.set_ylabel("Hit ratio")
+    ax4.set_xlabel("Key (limited to {} top keys)".format(top_keys_border))
     ax4.grid(True)
 
     # adjust layout and show the plot
