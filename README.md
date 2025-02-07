@@ -9,7 +9,7 @@ A simulator tool to study web application caching:
 
 - [x] Gather simulation parameters into a single data structure
 - [x] Make simulation parameters fully controllable via command-line arguments
-- [ ] Add random seed
+- [x] Add random seed
 - [ ] Beautify logger format
 - [x] Write simulation parameters into the journal (in the comments section), with the current time
 - [x] Display all important charting parameters on the plot

@@ -22,6 +22,7 @@ class SimulationParams:
                 parser.add_argument(f"--{k}", type=type(v), default=v, metavar="")
         return parser
 
+    RANDOM_SEED = 42
     SIMULATION_TIME = 60 * 60 * 1000
 
     KEY_CACHE_PREFILL_MAX = 10000
@@ -221,6 +222,7 @@ def main():
     parser.add_argument("--journal", type=str, default="journal.csv", help="Simulation journal output filename")
     parser.add_argument("--loglevel", default=logging.DEBUG, choices=[*logging.getLevelNamesMapping().keys()], help="Logging level")
     args = parser.parse_args()
+    random.seed(args.RANDOM_SEED)
 
     logging.basicConfig(level=args.loglevel)
     env = CacheSimulationEnvironment(args=args)
