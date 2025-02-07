@@ -20,6 +20,7 @@ def get_border_key(df: pd.DataFrame, top_keys_share: float):
 def main():
     parser = argparse.ArgumentParser(description="Draw charts of cache simulation")
     parser.add_argument("--journal", type=str, default="journal.csv", help="Simulation journal filename")
+    parser.add_argument("--top-keys-border", type=int, default=0, metavar="N", help="Limit top keys by border key")
     parser.add_argument("--top-keys-requests-min", type=float, default=0, help="Limit top keys by minimal number of requests")
     parser.add_argument("--top-keys-requests-share", type=float, default=0.8, help="Limit top keys by share of requests")
     parser.add_argument("--response-time-quantile", type=float, default=0.99, help="Quantile of response time to display")
@@ -36,7 +37,9 @@ def main():
     # create a figure with subplots
     fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(12, 8))
 
-    if args.top_keys_requests_min > 0:
+    if args.top_keys_border > 0:
+        top_keys_border = args.top_keys_border
+    elif args.top_keys_requests_min > 0:
         counts = df["key"].value_counts()
         top_keys_border = counts[counts > args.top_keys_requests_min].index[-1]
     elif args.top_keys_requests_share > 0:
