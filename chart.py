@@ -25,7 +25,8 @@ def main():
     parser.add_argument("--top-keys-requests-min", type=float, default=0, help="Limit top keys by minimal number of requests")
     parser.add_argument("--top-keys-requests-share", type=float, default=0.8, help="Limit top keys by share of requests")
     parser.add_argument("--response-time-quantile", type=float, default=0.99, help="Quantile of response time to display")
-    parser.add_argument("--keys-distribution-nlargest", type=int, default=200, metavar="N", help="Display top N keys in the distribution")
+    parser.add_argument("--keys-distribution-nlargest", type=int, default=250, metavar="N", help="Display N most popular keys in the distribution")
+    parser.add_argument("--layout", type=str, default="vertical", choices=["vertical", "square"], help="Layout of subplots")
     parser.add_argument("--loglevel", default=logging.INFO, choices=list(logging.getLevelNamesMapping().keys()), help="Logging level")
     args = parser.parse_args()
 
@@ -40,7 +41,12 @@ def main():
     ax2: Axes
     ax3: Axes
     ax4: Axes
-    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(12, 8))
+    if args.layout == "vertical":
+        fig, (ax1, ax2, ax3, ax4) = plt.subplots(4, 1, figsize=(6, 8))
+    elif args.layout == "square":
+        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(12, 8))
+    else:
+        raise ValueError("Invalid layout")
 
     if args.top_keys_border > 0:
         top_keys_border = args.top_keys_border
@@ -57,7 +63,7 @@ def main():
     logging.getLogger().info("Requests for popular keys count %d (%0.4f)", len(df_topkeys), len(df_topkeys) / len(df))
 
     # plot response time over time
-    ax1.title.set_text("Backend response time")
+    ax1.title.set_text("Top {} keys response time".format(top_keys_border))
     df_topkeys.drop(columns="result", inplace=True)
     df_resampled_px = df_topkeys.resample("60s").quantile(args.response_time_quantile)
     df_resampled_p50 = df_topkeys.resample("60s").quantile(0.5)
@@ -87,7 +93,7 @@ def main():
     ax3.title.set_text("Key popularity distribution")
     key_popularity = df["key"].value_counts().nlargest(args.keys_distribution_nlargest)
     ax3.bar(key_popularity.index, key_popularity.values, width=1.0, color="b")
-    ax3.set_xlabel("Key (limited to {} most popular)".format(args.keys_distribution_nlargest))
+    ax3.set_xlabel("Key (displaying {} most popular keys for better visibility)".format(args.keys_distribution_nlargest))
     ax3.set_ylabel("Requests count")
     ax3.grid(True)
 
@@ -100,7 +106,7 @@ def main():
     ax4.bar(df_hit_ratio.index, df_hit_ratio.values, width=1.0, color="g")
     ax4.bar(df_miss_ratio.index, df_miss_ratio.values, bottom=df_hit_ratio.values, width=1.0, color="r")
     ax4.set_ylabel("Hit ratio")
-    ax4.set_xlabel("Key (limited to {} top keys)".format(top_keys_border))
+    ax4.set_xlabel("Key (limited to the top {} keys)".format(top_keys_border))
     ax4.grid(True)
 
     # adjust layout and show the plot
